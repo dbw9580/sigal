@@ -26,6 +26,9 @@ class Decryptor {
         this._jobCount = 0;
         this._jobMap = new Map();
         this._workerReady = false;
+        this._db = new DB(Decryptor.DB_NAME);
+        this._db.schemaHandler = Decryptor.gallerySchemeHandler;
+        this._db.store = Decryptor.STORE_NAME;
 
         if (Decryptor.isServiceWorker()) {
             this._role = "service_worker";
@@ -36,13 +39,16 @@ class Decryptor {
             }
             this._role = "main";
             this._config = config;
-            const local_config = this._mGetLocalConfig();
-            if (local_config) {
-                this._config = local_config;
-            }
-            window.addEventListener(
-                "load",
-                (e) => this._mSetupServiceWorker(),
+            document.addEventListener(
+                "DOMContentLoaded",
+                (e) => {
+                    this._getLocalConfig().then((local_config) => {
+                        if (local_config) {
+                            this._config = local_config;
+                        }
+                        this._mSetupServiceWorker();
+                    });
+                },
                 { once: true, passive: true }
             );
         }
@@ -67,7 +73,8 @@ class Decryptor {
             typeof fetch,
             typeof Blob.prototype.arrayBuffer,
             typeof Response.prototype.clone,
-            typeof caches
+            typeof caches,
+            typeof IDBDatabase
         ];
         return features.every((e) => e !== "undefined");
     }
@@ -142,39 +149,40 @@ class Decryptor {
 
     set workerReady(val) {
         this._workerReady = (val ? true : false);
-        if (this._workerReady) {
-            const eventTarget = (Decryptor.isWorker() ? self : document);
-            Decryptor._sendEvent(eventTarget, "DecryptWorkerReady");
-        }
     }
 
-    _mSetWorkerReady() {
+    async _mSetWorkerReady() {
         this.workerReady = true;
-        const had_been_ready_before = localStorage.getItem(this._config.galleryId) !== null;
-        localStorage.setItem(this._config.galleryId, JSON.stringify(this._config));
-        if (!had_been_ready_before) {
+        const config = await this._getLocalConfig();
+        const first_visit = config === null;
+        await this._db.open().putObject(this._config).go();
+        if (first_visit) {
             window.location.reload();
         }
     }
 
-    _mUnsetWorkerReady() {
+    async _mUnsetWorkerReady() {
         this.workerReady = false;
-        localStorage.removeItem(this._config.galleryId);
+        await this._db.open().deleteObject(this._config.galleryId).go();
+        alert("Incorrect Password!");
     }
 
-    _mGetLocalConfig() {
-        const local_config = JSON.parse(localStorage.getItem(this._config.galleryId));
-        if (local_config 
-            && local_config.galleryId
-            && local_config.sw_script
-            && local_config.password
-            && local_config.gcm_tag
-            && local_config.kdf_salt
-            && local_config.kdf_iters) {
-            return local_config;
-        } else {
-            return null;
+    async _getLocalConfig() {
+        try {
+            const local_config = await this._db.open().getObject(this._config.galleryId).go();
+            if (local_config 
+                && local_config.galleryId
+                && local_config.sw_script
+                && local_config.password
+                && local_config.gcm_tag
+                && local_config.kdf_salt
+                && local_config.kdf_iters) {
+                return local_config;
+            }
+        } catch (e) {
+            console.error("Error getting local config from database: " + e);
         }
+        return null;
     }
 
     async _mSetupServiceWorker() {
@@ -221,7 +229,7 @@ class Decryptor {
 
     /* main thread only */
     async _mAskPassword() {
-        const config = JSON.parse(localStorage.getItem(this._config.galleryId));
+        const config = await this._getLocalConfig();
         if (config && config.password) {
             return config.password;
         }
@@ -503,13 +511,7 @@ class Decryptor {
         if (!Decryptor.isInitialized()) {
             if ('decryptor' in self) {
                 try{
-                    const clients = await self.clients.matchAll({type: "window"});
-                    const races = Promise.race(
-                        clients.map((client) => {
-                            return self.decryptor._proxyWrap(client)._mGetLocalConfig();
-                        })
-                    );
-                    const config = await Promise.timeout(races, 100);
+                    const config = await this._getLocalConfig();
                     await self.decryptor._swInitServiceWorker(config);
                 } catch (error) {
                     // do nothing
@@ -589,13 +591,141 @@ Decryptor.errorResponse = new Response(
     }
 );
 
+Decryptor.gallerySchemeHandler = (db) => {
+    db.createObjectStore(Decryptor.STORE_NAME, { keyPath: "galleryId" });
+};
+
+Decryptor.DB_NAME = "decryptor";
+Decryptor.STORE_NAME = "galleries";
+
 Promise.timeout = function(cb_or_pm, timeout) {
     return Promise.race([
-        cb_or_pm instanceof Function ? new Promise(cb) : cb_or_pm,
+        cb_or_pm instanceof Function ? new Promise(cb_or_pm) : cb_or_pm,
         new Promise((resolve, reject) => {
             setTimeout(() => {
                 reject('Timed out');
             }, timeout);
         })
     ]);
+}
+
+/**
+ * Utility class for ease of use with IndexedDB
+ */
+class DB {
+    constructor(name, version=1) {
+        this._name = name;
+        this._version = version;
+        this._db = null;
+        this._store = null;
+        this._schemaHandler = null;
+        this._pendingPromise = null;
+    }
+
+    set schemaHandler(handler) {
+        this._schemaHandler = handler;
+    }
+
+    set store(name) {
+        this._store = name;
+    }
+
+    _compose(processors) {
+        if (this._pendingPromise) {
+            this._pendingPromise = this._pendingPromise.then((_) => { 
+                return new Promise(processors);
+            });
+        } else {
+            this._pendingPromise = new Promise(processors);
+        }
+    }
+
+    open() {
+        if (this._db !== null) {
+            return this;
+        }
+        
+        this._compose((resolve, reject) => {
+            let openRequest = self.indexedDB.open(this._name, this._version);
+            openRequest.onerror = (e) => { reject(e.target.error) };
+            openRequest.onupgradeneeded = (e) => {
+                if (this._schemaHandler) {
+                    this._db = e.target.result;
+                    this._schemaHandler(e.target.result);
+                } else {
+                    e.target.result.close();
+                    reject(new Error("Database upgrade needed"));
+                }
+            };
+            openRequest.onsuccess = (e) => {
+                this._db = e.target.result;
+                this._db.onabort = (e) => {
+                    console.warn("Transaction aborted");
+                };
+                this._db.onerror = (e) => {
+                    console.error("Transaction error" + e.target.error);
+                };
+                this._db.onversionchange = (e) => {
+                    console.warn("DB version change requested");
+                    this._db.close();
+                    this._db = null;
+                };
+                resolve(this._db);
+            };
+        });
+        return this;
+    }
+
+    openStore(store) {
+        this._store = store;
+        return this;
+    }
+
+    close() {
+        if (this._db) {
+            this._db.close();
+            this._db = null;
+        }
+    }
+
+    async go() {
+        if (this._pendingPromise) {
+            const promise = this._pendingPromise;
+            this._pendingPromise = null;
+            return await promise;
+        }
+        return undefined;
+    }
+
+    _transaction(mode, operation) {
+        this._compose((resolve, reject) => {
+            if (this._db === null) {
+                reject(new Error("No open database"));
+            }
+            let transaction = this._db.transaction(this._store, mode);
+            let request = operation(transaction);
+            request.onsuccess = (e) => { resolve(e.target.result) };
+            request.onerror = (e) => { reject(e.target.error) };
+            transaction.commit();
+        });
+        return this;
+    }
+
+    getObject(key) {
+        return this._transaction("readonly", (transaction) => {
+            return transaction.objectStore(this._store).get(key);
+        });
+    }
+
+    putObject(value, key=undefined) {
+        return this._transaction("readwrite", (transaction) => {
+            return transaction.objectStore(this._store).put(value, key);
+        });
+    }
+
+    deleteObject(key) {
+        return this._transaction("readwrite", (transaction) => {
+            return transaction.objectStore(this._store).delete(key);
+        });
+    }
 }

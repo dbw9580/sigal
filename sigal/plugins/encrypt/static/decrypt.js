@@ -505,7 +505,7 @@ class Decryptor {
     }
 
     static async _swHandleFetch(e) {
-        const request = e.request;
+        const request = Decryptor.requestModifier(e.request);
         try {
             const cached_response = await caches.match(request);
             if (cached_response) {
@@ -641,6 +641,8 @@ Decryptor.generalErrorResponse = new Response(
         statusText: "Server Error"
     }
 );
+
+Decryptor.requestModifier = (r) => r;
 
 Promise.timeout = function(cb_or_pm, timeout) {
     return Promise.race([

@@ -505,13 +505,15 @@ class Decryptor {
     }
 
     static async _swHandleFetch(e) {
-        const request = Decryptor.requestModifier(e.request);
+        const request = Decryptor.requestHandler(e.request);
+        const getResponse = (response, type, ...contexts) => Decryptor.responseHandler(request, response, type, contexts);
+
         try {
             const cached_response = await caches.match(request);
             if (cached_response) {
                 // TODO: handle cache expiration
                 console.debug(`Found cached response for ${request.url}`);
-                return cached_response;
+				return getResponse(cached_response, "cache-found");
             }
         } catch (error) {
             console.error("Caches.match error!");
@@ -522,12 +524,12 @@ class Decryptor {
             response = await fetch(request);
         } catch (error) {
             console.debug(`Fetch failed when trying for ${request.url}: ${error}`);
-            return Decryptor.generalErrorResponse.clone();
+			return getResponse(Decryptor.generalErrorResponse.clone(), "fetch-failed", error);
         }
 
         if (!response.ok) {
             console.debug(`Fetch succeeded but server returned non-2xx: ${request.url}`);
-            return response;
+			return getResponse(response, "status-not-ok");
         }
 
         const is_image = [
@@ -540,7 +542,7 @@ class Decryptor {
 
         if (!is_image.some((e) => e)) {
             console.debug(`Fetch succeeded but response is likely not an image ${request.url}`);
-            return response;
+            return getResponse(response, "non-image");
         }
 
         const response_clone = response.clone();
@@ -548,7 +550,7 @@ class Decryptor {
         const encrypted_arraybuffer = await encrypted_blob.arrayBuffer();
         if (!(await Decryptor.checkMagicString(encrypted_arraybuffer))) {
             console.debug(`Response image is not encrypted: ${request.url}`);
-            return response_clone;
+            return getResponse(response_clone, "not-encrypted");
         }
         console.debug(`Fetch succeeded with encrypted image ${request.url}, trying to decrypt`);
 
@@ -564,7 +566,7 @@ class Decryptor {
             }
             if (!Decryptor.isWorkerReady()) {
                 console.debug(`Decryptor not initialized on fetch event`);
-                return Decryptor.imageErrorResponse.clone();
+				return getResponse(Decryptor.imageErrorResponse.clone(), "worker-not-ready");
             }
         }
 
@@ -577,7 +579,7 @@ class Decryptor {
         } catch (error) {
             console.debug(`Decryption failed for ${request.url}: ${error.message}`);
             console.error("Corrupted data??? This shouldn't occur.");
-            return Decryptor.imageErrorResponse.clone();
+            return getResponse(Decryptor.imageErrorResponse.clone(), "decryption-failed", error);
         }
 
         const decrypted_response = new Response(
@@ -593,7 +595,7 @@ class Decryptor {
         Decryptor._addToCache(request, decrypted_response.clone());
 
         console.debug(`Responding with decrypted response ${request.url}`);
-        return decrypted_response;
+        return getResponse(decrypted_response, "decryption-succeeded");
     }
 
     static onServiceWorkerFetch(e) {
@@ -635,14 +637,15 @@ Decryptor.imageErrorResponse = new Response(
 );
 
 Decryptor.generalErrorResponse = new Response(
-    null,
+    "Service Unavailable",
     {
         status: 500,
         statusText: "Server Error"
     }
 );
 
-Decryptor.requestModifier = (r) => r;
+Decryptor.requestHandler = (r) => r;
+Decryptor.responseHandler = (r) => r;
 
 Promise.timeout = function(cb_or_pm, timeout) {
     return Promise.race([

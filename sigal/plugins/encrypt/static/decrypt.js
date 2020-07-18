@@ -505,8 +505,9 @@ class Decryptor {
     }
 
     static async _swHandleFetch(e) {
-        const request = Decryptor.requestHandler(e.request);
-        const getResponse = (response, type, ...contexts) => Decryptor.responseHandler(request, response, type, contexts);
+        const raw_request = e.request;
+        const getResponse = (response, type, ...contexts) => Decryptor.responseHandler(raw_request, response, type, contexts);
+        const request = Decryptor.requestHandler(raw_request);
 
         try {
             const cached_response = await caches.match(request);

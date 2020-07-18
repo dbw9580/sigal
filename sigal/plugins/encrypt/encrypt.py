@@ -252,25 +252,22 @@ def encrypt_file(filename, full_path, key, gcm_tag):
 
 def copy_assets(settings):
     theme_path = os.path.join(settings["destination"], 'static')
-    copy(
-        os.path.join(ASSETS_PATH, "decrypt.js"),
-        theme_path,
-        symlink=False,
-        rellink=False,
-    )
-    copy(
-        os.path.join(ASSETS_PATH, "keycheck.txt"),
-        theme_path,
-        symlink=False,
-        rellink=False,
-    )
-    copy(
-        os.path.join(ASSETS_PATH, "sw.js"),
-        settings["destination"],
-        symlink=False,
-        rellink=False,
-    )
-
+    copy(os.path.join(ASSETS_PATH, "decrypt.js"),
+         theme_path,
+         symlink=False,
+         rellink=False)
+    copy(os.path.join(ASSETS_PATH, "keycheck.txt"),
+         theme_path,
+         symlink=False,
+         rellink=False)
+    copy(os.path.join(ASSETS_PATH, "sw.js"),
+         settings["destination"],
+         symlink=False,
+         rellink=False)
+    copy(os.path.join(ASSETS_PATH, "sw-plugins.js"),
+         theme_path,
+         symlink=False,
+         rellink=False)
 
 def inject_scripts(context):
     cache = load_cache(context['settings'])

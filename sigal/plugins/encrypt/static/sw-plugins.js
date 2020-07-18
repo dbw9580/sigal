@@ -28,7 +28,7 @@ Decryptor.responseHandler = (request, response, type, contexts) => {
             }
         case "non-image":
         case "not-encrypted":
-            Decryptor._addToCache(request, response);
+            Decryptor._addToCache(request, response.clone());
         default:
             return response;
     }
